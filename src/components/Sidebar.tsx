@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Shield, LayoutDashboard, Clock, AlertTriangle, Info } from "lucide-react";
+import { Shield, LayoutDashboard, Clock, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
@@ -7,7 +7,6 @@ const links = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/recent", icon: Clock, label: "Recent Scans" },
   { to: "/campaigns", icon: AlertTriangle, label: "Campaign Alerts" },
-  { to: "/about", icon: Info, label: "About & Docs" },
 ];
 
 export function Sidebar() {

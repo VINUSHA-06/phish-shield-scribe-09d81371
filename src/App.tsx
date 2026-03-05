@@ -8,7 +8,6 @@ import Scanner from "./pages/Scanner";
 import Dashboard from "./pages/Dashboard";
 import RecentScans from "./pages/RecentScans";
 import CampaignAlerts from "./pages/CampaignAlerts";
-import About from "./pages/About";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -27,7 +26,7 @@ const App = () => (
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/recent" element={<RecentScans />} />
               <Route path="/campaigns" element={<CampaignAlerts />} />
-              <Route path="/about" element={<About />} />
+              
               <Route path="*" element={<NotFound />} />
             </Routes>
           </main>
