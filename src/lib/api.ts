@@ -200,15 +200,13 @@ function mockScanResult(url: string): ScanResult {
       digit_ratio: isPhishing ? 0.35 : 0.05,
     },
     shap_explanation: (isPhishing || isDefacement)
-      ? flags.slice(0, 5).map((f, i) => ({ feature: f, value: +(risk_score / (i + 2)).toFixed(1), impact: "positive" as const })).concat(
-          !url.startsWith("https") ? [] : [{ feature: "HTTPS Present", value: 1, impact: "negative" as const }]
-        ).slice(0, 5)
+      ? flags.slice(0, 5).map((f, i) => ({ feature: f, value: +(risk_score / (i + 2)).toFixed(1), impact: "positive" as "positive" | "negative" }))
       : [
-          { feature: "HTTPS Present", value: 1, impact: "negative" as const },
-          { feature: "Domain Age (days)", value: 1820, impact: "negative" as const },
-          { feature: "URL Entropy", value: 2.9, impact: "negative" as const },
-          { feature: "TLD Risk Score", value: 0.1, impact: "negative" as const },
-          { feature: "Suspicious Keywords", value: 0, impact: "negative" as const },
+          { feature: "HTTPS Present", value: 1, impact: "negative" as "positive" | "negative" },
+          { feature: "Domain Age (days)", value: 1820, impact: "negative" as "positive" | "negative" },
+          { feature: "URL Entropy", value: 2.9, impact: "negative" as "positive" | "negative" },
+          { feature: "TLD Risk Score", value: 0.1, impact: "negative" as "positive" | "negative" },
+          { feature: "Suspicious Keywords", value: 0, impact: "negative" as "positive" | "negative" },
         ],
     domain_intel: {
       creation_date: isPhishing ? "2024-11-15" : "2010-03-22",
