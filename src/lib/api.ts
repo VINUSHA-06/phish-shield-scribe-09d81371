@@ -165,7 +165,7 @@ function analyzeUrl(url: string): { prediction: "benign" | "phishing" | "defacem
   }
 
   score = Math.min(100, Math.round(score));
-  const prediction = score >= 61 ? "phishing" : score >= 31 ? "phishing" : "benign";
+  const prediction: "benign" | "phishing" | "defacement" = score >= 31 ? "phishing" : "benign";
   return { prediction, risk_score: score, flags };
 }
 
