@@ -74,15 +74,109 @@ export interface CampaignAlert {
   target_brand?: string;
 }
 
+// ─── Heuristic URL Risk Engine ───────────────────────────────────────────────
+function analyzeUrl(url: string): { prediction: "benign" | "phishing" | "defacement"; risk_score: number; flags: string[] } {
+  let score = 0;
+  const flags: string[] = [];
+  const lower = url.toLowerCase();
+
+  // 1. No protocol → strong phishing signal
+  if (!/^https?:\/\//i.test(url)) {
+    score += 40;
+    flags.push("No HTTP/HTTPS protocol");
+  }
+
+  // 2. HTTP (not HTTPS) → moderate risk
+  if (/^http:\/\//i.test(url)) {
+    score += 15;
+    flags.push("Unencrypted HTTP");
+  }
+
+  // 3. Suspicious keywords
+  const suspiciousKeywords = ["login", "verify", "secure", "bank", "update", "account", "password", "confirm", "billing", "signin", "credential", "webscr", "ebayisapi", "authentication"];
+  const found = suspiciousKeywords.filter(k => lower.includes(k));
+  if (found.length > 0) {
+    score += found.length * 12;
+    flags.push(`Suspicious keywords: ${found.join(", ")}`);
+  }
+
+  // 4. IP address used as host
+  if (/https?:\/\/\d{1,3}(\.\d{1,3}){3}/i.test(url)) {
+    score += 30;
+    flags.push("IP address used instead of domain");
+  }
+
+  // 5. Risky TLDs
+  const riskyTlds = [".tk", ".ml", ".cf", ".ga", ".xyz", ".top", ".pw", ".cc", ".click", ".gq", ".work", ".link"];
+  if (riskyTlds.some(t => lower.includes(t))) {
+    score += 20;
+    flags.push("High-risk TLD detected");
+  }
+
+  // 6. @ symbol in URL (credential spoofing)
+  if (url.includes("@")) {
+    score += 25;
+    flags.push("@ symbol detected (credential spoof)");
+  }
+
+  // 7. Excessive hyphens (brand mimicry)
+  const hyphens = (url.match(/-/g) || []).length;
+  if (hyphens >= 3) {
+    score += hyphens * 5;
+    flags.push(`Excessive hyphens (${hyphens})`);
+  }
+
+  // 8. Excessive subdomains
+  const host = url.replace(/https?:\/\//i, "").split("/")[0];
+  const subdomains = host.split(".").length - 2;
+  if (subdomains >= 2) {
+    score += subdomains * 8;
+    flags.push(`Too many subdomains (${subdomains})`);
+  }
+
+  // 9. Unusually long URL
+  if (url.length > 75) {
+    score += 10;
+    flags.push(`Long URL (${url.length} chars)`);
+  }
+  if (url.length > 120) {
+    score += 10;
+    flags.push("Extremely long URL");
+  }
+
+  // 10. Digits replacing letters (e.g. paypa1, amaz0n)
+  if (/[a-z]\d[a-z]/i.test(lower) || /[a-z]\d$/i.test(lower)) {
+    score += 18;
+    flags.push("Digit-letter substitution (e.g. paypa1)");
+  }
+
+  // 11. Known defacement patterns
+  const defacementKeywords = ["hack", "pwned", "defaced", "owned", "hacked_by", "r00t"];
+  if (defacementKeywords.some(k => lower.includes(k))) {
+    score = Math.max(score, 65);
+    flags.push("Defacement keyword detected");
+    return { prediction: "defacement", risk_score: Math.min(100, score), flags };
+  }
+
+  // 12. Trusted domain whitelist → reduce score
+  const trustedDomains = ["google.com", "github.com", "stackoverflow.com", "npmjs.com", "twitter.com", "youtube.com", "microsoft.com", "apple.com", "linkedin.com", "wikipedia.org"];
+  if (trustedDomains.some(d => lower.includes(d))) {
+    score = Math.max(0, score - 50);
+  }
+
+  score = Math.min(100, Math.round(score));
+  const prediction: "benign" | "phishing" | "defacement" = score >= 31 ? "phishing" : "benign";
+  return { prediction, risk_score: score, flags };
+}
+
 // Mock data generators
 function mockScanResult(url: string): ScanResult {
-  const isPhishing = url.includes("login") || url.includes("verify") || url.includes("secure") || url.includes("paypal") || url.includes("bank");
-  const isDefacement = url.includes("hack") || url.includes("pwned") || url.includes("defaced");
-  const prediction = isPhishing ? "phishing" : isDefacement ? "defacement" : "benign";
-  const risk_score = isPhishing ? 72 + Math.random() * 20 : isDefacement ? 60 + Math.random() * 15 : Math.random() * 25;
-  const risk_category = risk_score > 60 ? "High Risk" : risk_score > 30 ? "Suspicious" : "Safe";
+  const { prediction, risk_score, flags } = analyzeUrl(url);
+  const isPhishing = prediction === "phishing";
+  const isDefacement = prediction === "defacement";
+  const risk_category: "Safe" | "Suspicious" | "High Risk" = risk_score > 60 ? "High Risk" : risk_score > 30 ? "Suspicious" : "Safe";
 
-  const hasBrandSpoof = isPhishing && (url.includes("paypal") || url.includes("amazon") || url.includes("google"));
+  const hasBrandSpoof = (url.toLowerCase().includes("paypal") || url.toLowerCase().includes("amazon") || url.toLowerCase().includes("google")) && isPhishing;
 
   return {
     url,
@@ -105,20 +199,14 @@ function mockScanResult(url: string): ScanResult {
       tld_risk: isPhishing ? 0.7 : 0.1,
       digit_ratio: isPhishing ? 0.35 : 0.05,
     },
-    shap_explanation: isPhishing
-      ? [
-          { feature: "URL Entropy", value: 4.5, impact: "positive" },
-          { feature: "Suspicious Keywords", value: 2, impact: "positive" },
-          { feature: "Domain Age (days)", value: 12, impact: "positive" },
-          { feature: "TLD Risk Score", value: 0.7, impact: "positive" },
-          { feature: "HTTPS Present", value: 0, impact: "negative" },
-        ]
+    shap_explanation: (isPhishing || isDefacement)
+      ? flags.slice(0, 5).map((f, i) => ({ feature: f, value: +(risk_score / (i + 2)).toFixed(1), impact: "positive" as "positive" | "negative" }))
       : [
-          { feature: "HTTPS Present", value: 1, impact: "negative" },
-          { feature: "Domain Age (days)", value: 1820, impact: "negative" },
-          { feature: "URL Entropy", value: 2.9, impact: "negative" },
-          { feature: "TLD Risk Score", value: 0.1, impact: "negative" },
-          { feature: "Suspicious Keywords", value: 0, impact: "negative" },
+          { feature: "HTTPS Present", value: 1, impact: "negative" as "positive" | "negative" },
+          { feature: "Domain Age (days)", value: 1820, impact: "negative" as "positive" | "negative" },
+          { feature: "URL Entropy", value: 2.9, impact: "negative" as "positive" | "negative" },
+          { feature: "TLD Risk Score", value: 0.1, impact: "negative" as "positive" | "negative" },
+          { feature: "Suspicious Keywords", value: 0, impact: "negative" as "positive" | "negative" },
         ],
     domain_intel: {
       creation_date: isPhishing ? "2024-11-15" : "2010-03-22",
