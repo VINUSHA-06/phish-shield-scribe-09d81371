@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { RiskMeter } from "@/components/RiskMeter";
 import { ThreatBadge } from "@/components/ThreatBadge";
 import { scanUrl, ScanResult } from "@/lib/api";
+import { saveToHistory } from "@/lib/scanHistory";
 import { cn } from "@/lib/utils";
 import heroBg from "@/assets/hero-bg.jpg";
 

@@ -1,16 +1,15 @@
-import { useEffect, useState } from "react";
-import { getRecentScans, RecentScan } from "@/lib/api";
+import { useState } from "react";
+import { RecentScan } from "@/lib/api";
 import { ThreatBadge } from "@/components/ThreatBadge";
-import { Loader2, ExternalLink } from "lucide-react";
+import { ExternalLink, Trash2, ScanLine } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getHistory, clearHistory } from "@/lib/scanHistory";
+import { Button } from "@/components/ui/button";
+import { useNavigate } from "react-router-dom";
 
 export default function RecentScans() {
-  const [scans, setScans] = useState<RecentScan[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    getRecentScans().then(s => { setScans(s); setLoading(false); });
-  }, []);
+  const [scans, setScans] = useState<RecentScan[]>(() => getHistory());
+  const navigate = useNavigate();
 
   if (loading) return (
     <div className="flex items-center justify-center h-96">
