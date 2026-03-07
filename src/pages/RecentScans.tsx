@@ -1,28 +1,50 @@
-import { useEffect, useState } from "react";
-import { getRecentScans, RecentScan } from "@/lib/api";
+import { useState } from "react";
+import { RecentScan } from "@/lib/api";
 import { ThreatBadge } from "@/components/ThreatBadge";
-import { Loader2, ExternalLink } from "lucide-react";
+import { ExternalLink, Trash2, ScanLine } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getHistory, clearHistory } from "@/lib/scanHistory";
+import { Button } from "@/components/ui/button";
+import { useNavigate } from "react-router-dom";
 
 export default function RecentScans() {
-  const [scans, setScans] = useState<RecentScan[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [scans, setScans] = useState<RecentScan[]>(() => getHistory());
+  const navigate = useNavigate();
 
-  useEffect(() => {
-    getRecentScans().then(s => { setScans(s); setLoading(false); });
-  }, []);
+  function handleClear() {
+    clearHistory();
+    setScans([]);
+  }
 
-  if (loading) return (
-    <div className="flex items-center justify-center h-96">
-      <Loader2 className="w-8 h-8 text-primary animate-spin" />
-    </div>
-  );
+  if (scans.length === 0) {
+    return (
+      <div className="px-8 py-8 space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold mb-1">Recent Scans</h1>
+          <p className="text-muted-foreground text-sm">No scans recorded yet</p>
+        </div>
+        <div className="flex flex-col items-center justify-center h-64 gap-4 text-center rounded-xl border border-dashed border-border bg-gradient-card">
+          <ScanLine className="w-12 h-12 text-muted-foreground/40" />
+          <p className="text-muted-foreground text-sm">You haven't scanned any URLs yet.</p>
+          <Button onClick={() => navigate("/")} variant="outline" size="sm">
+            Go to Scanner
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="px-8 py-8 space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold mb-1">Recent Scans</h1>
-        <p className="text-muted-foreground text-sm">Last {scans.length} URLs analyzed by the system</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold mb-1">Recent Scans</h1>
+          <p className="text-muted-foreground text-sm">Last {scans.length} URLs you analyzed</p>
+        </div>
+        <Button onClick={handleClear} variant="outline" size="sm" className="gap-2 text-danger border-danger/30 hover:bg-danger/10">
+          <Trash2 className="w-3.5 h-3.5" />
+          Clear History
+        </Button>
       </div>
 
       <div className="rounded-xl border border-border bg-gradient-card overflow-hidden">

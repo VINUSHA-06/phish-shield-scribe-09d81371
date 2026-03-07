@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { RiskMeter } from "@/components/RiskMeter";
 import { ThreatBadge } from "@/components/ThreatBadge";
 import { scanUrl, ScanResult } from "@/lib/api";
+import { saveToHistory } from "@/lib/scanHistory";
 import { cn } from "@/lib/utils";
 import heroBg from "@/assets/hero-bg.jpg";
 
@@ -28,6 +29,15 @@ export default function Scanner() {
     try {
       const res = await scanUrl(url.trim());
       setResult(res);
+      // Persist to localStorage for Recent Scans
+      saveToHistory({
+        id: `scan_${Date.now()}`,
+        url: res.url,
+        prediction: res.prediction,
+        risk_score: res.risk_score,
+        risk_category: res.risk_category,
+        scanned_at: res.scanned_at,
+      });
     } catch {
       setError("Failed to connect to the analysis server. Ensure Flask backend is running.");
     } finally {
