@@ -1,4 +1,17 @@
-// Mock API client — wire to real Flask backend by changing BASE_URL
+/**
+ * ThreatIQ API Client — wires the threat engine to React UI
+ * Production mode: swap BASE_URL + uncomment real fetch calls
+ */
+import {
+  extractFeatures,
+  scoreUrl,
+  buildDomainIntel,
+  detectBrandSpoof,
+  generateSHAP,
+  predictPhishingDomains,
+  type PredictedDomain,
+} from "./threatEngine";
+
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 export interface ScanResult {
@@ -21,8 +34,16 @@ export interface ScanResult {
     entropy: number;
     tld_risk: number;
     digit_ratio: number;
+    path_depth: number;
+    query_param_count: number;
+    is_encoded: boolean;
   };
-  shap_explanation: Array<{ feature: string; value: number; impact: "positive" | "negative" }>;
+  shap_explanation: Array<{
+    feature: string;
+    value: number;
+    impact: "positive" | "negative";
+    description: string;
+  }>;
   domain_intel: {
     creation_date: string;
     expiry_date: string;
@@ -33,12 +54,22 @@ export interface ScanResult {
     ssl_expiry: string;
     country: string;
     country_risk: number;
+    country_flag: string;
+    nameservers: string[];
+    abuse_score: number;
   };
   brand_spoof: {
     detected: boolean;
     target_brand: string;
     similarity: number;
   } | null;
+  scoring_details: Array<{
+    rule: string;
+    points: number;
+    category: string;
+    triggered: boolean;
+  }>;
+  predicted_domains: PredictedDomain[];
   scanned_at: string;
 }
 
@@ -49,9 +80,10 @@ export interface Statistics {
   defacement_count: number;
   phishing_percentage: number;
   top_keywords: Array<{ keyword: string; count: number }>;
-  country_distribution: Array<{ country: string; count: number; risk: number }>;
+  country_distribution: Array<{ country: string; count: number; risk: number; flag: string }>;
   daily_detections: Array<{ date: string; phishing: number; benign: number; defacement: number }>;
   risk_distribution: Array<{ category: string; count: number }>;
+  keyword_trend: Array<{ month: string; login: number; verify: number; secure: number; bank: number }>;
 }
 
 export interface RecentScan {
@@ -72,164 +104,66 @@ export interface CampaignAlert {
   similarity_score: number;
   detected_at: string;
   target_brand?: string;
+  timeline: Array<{ date: string; domain: string; event: string }>;
+  predicted_next: string[];
 }
 
-// ─── Heuristic URL Risk Engine ───────────────────────────────────────────────
-function analyzeUrl(url: string): { prediction: "benign" | "phishing" | "defacement"; risk_score: number; flags: string[] } {
-  let score = 0;
-  const flags: string[] = [];
-  const lower = url.toLowerCase();
-
-  // 1. No protocol → strong phishing signal
-  if (!/^https?:\/\//i.test(url)) {
-    score += 40;
-    flags.push("No HTTP/HTTPS protocol");
-  }
-
-  // 2. HTTP (not HTTPS) → moderate risk
-  if (/^http:\/\//i.test(url)) {
-    score += 15;
-    flags.push("Unencrypted HTTP");
-  }
-
-  // 3. Suspicious keywords
-  const suspiciousKeywords = ["login", "verify", "secure", "bank", "update", "account", "password", "confirm", "billing", "signin", "credential", "webscr", "ebayisapi", "authentication"];
-  const found = suspiciousKeywords.filter(k => lower.includes(k));
-  if (found.length > 0) {
-    score += found.length * 12;
-    flags.push(`Suspicious keywords: ${found.join(", ")}`);
-  }
-
-  // 4. IP address used as host
-  if (/https?:\/\/\d{1,3}(\.\d{1,3}){3}/i.test(url)) {
-    score += 30;
-    flags.push("IP address used instead of domain");
-  }
-
-  // 5. Risky TLDs
-  const riskyTlds = [".tk", ".ml", ".cf", ".ga", ".xyz", ".top", ".pw", ".cc", ".click", ".gq", ".work", ".link"];
-  if (riskyTlds.some(t => lower.includes(t))) {
-    score += 20;
-    flags.push("High-risk TLD detected");
-  }
-
-  // 6. @ symbol in URL (credential spoofing)
-  if (url.includes("@")) {
-    score += 25;
-    flags.push("@ symbol detected (credential spoof)");
-  }
-
-  // 7. Excessive hyphens (brand mimicry)
-  const hyphens = (url.match(/-/g) || []).length;
-  if (hyphens >= 3) {
-    score += hyphens * 5;
-    flags.push(`Excessive hyphens (${hyphens})`);
-  }
-
-  // 8. Excessive subdomains
-  const host = url.replace(/https?:\/\//i, "").split("/")[0];
-  const subdomains = host.split(".").length - 2;
-  if (subdomains >= 2) {
-    score += subdomains * 8;
-    flags.push(`Too many subdomains (${subdomains})`);
-  }
-
-  // 9. Unusually long URL
-  if (url.length > 75) {
-    score += 10;
-    flags.push(`Long URL (${url.length} chars)`);
-  }
-  if (url.length > 120) {
-    score += 10;
-    flags.push("Extremely long URL");
-  }
-
-  // 10. Digits replacing letters (e.g. paypa1, amaz0n)
-  if (/[a-z]\d[a-z]/i.test(lower) || /[a-z]\d$/i.test(lower)) {
-    score += 18;
-    flags.push("Digit-letter substitution (e.g. paypa1)");
-  }
-
-  // 11. Known defacement patterns
-  const defacementKeywords = ["hack", "pwned", "defaced", "owned", "hacked_by", "r00t"];
-  if (defacementKeywords.some(k => lower.includes(k))) {
-    score = Math.max(score, 65);
-    flags.push("Defacement keyword detected");
-    return { prediction: "defacement", risk_score: Math.min(100, score), flags };
-  }
-
-  // 12. Trusted domain whitelist → reduce score
-  const trustedDomains = ["google.com", "github.com", "stackoverflow.com", "npmjs.com", "twitter.com", "youtube.com", "microsoft.com", "apple.com", "linkedin.com", "wikipedia.org"];
-  if (trustedDomains.some(d => lower.includes(d))) {
-    score = Math.max(0, score - 50);
-  }
-
-  score = Math.min(100, Math.round(score));
-  const prediction: "benign" | "phishing" | "defacement" = score >= 31 ? "phishing" : "benign";
-  return { prediction, risk_score: score, flags };
-}
-
-// Mock data generators
-function mockScanResult(url: string): ScanResult {
-  const { prediction, risk_score, flags } = analyzeUrl(url);
+// ─── Core Scan Engine ────────────────────────────────────────────────────────
+function runScan(url: string): ScanResult {
+  const features = extractFeatures(url);
+  const { score, details, prediction } = scoreUrl(url, features);
   const isPhishing = prediction === "phishing";
   const isDefacement = prediction === "defacement";
-  const risk_category: "Safe" | "Suspicious" | "High Risk" = risk_score > 60 ? "High Risk" : risk_score > 30 ? "Suspicious" : "Safe";
+  const isMalicious = isPhishing || isDefacement;
 
-  const hasBrandSpoof = (url.toLowerCase().includes("paypal") || url.toLowerCase().includes("amazon") || url.toLowerCase().includes("google")) && isPhishing;
+  const risk_category: "Safe" | "Suspicious" | "High Risk" =
+    score > 60 ? "High Risk" : score > 25 ? "Suspicious" : "Safe";
+
+  const brandSpoof = isMalicious ? detectBrandSpoof(url) : null;
+  const domainIntel = buildDomainIntel(url, isPhishing, isDefacement);
+  const shapValues = generateSHAP(features, details, prediction);
+
+  // Confidence: higher score → higher confidence in malicious label
+  const confidence = isMalicious
+    ? Math.min(0.99, 0.72 + (score / 100) * 0.25)
+    : Math.min(0.99, 0.88 + Math.random() * 0.1);
+
+  const predictedDomains = isMalicious ? predictPhishingDomains(url) : [];
 
   return {
     url,
     prediction,
-    confidence: isPhishing ? 0.87 + Math.random() * 0.1 : 0.92 + Math.random() * 0.07,
-    risk_score: Math.round(risk_score),
+    confidence,
+    risk_score: score,
     risk_category,
     features: {
-      url_length: url.length,
-      dot_count: (url.match(/\./g) || []).length,
-      hyphen_count: (url.match(/-/g) || []).length,
-      has_at: url.includes("@"),
-      has_ip: /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(url),
-      https: url.startsWith("https"),
-      digit_count: (url.match(/\d/g) || []).length,
-      special_char_count: (url.match(/[^a-zA-Z0-9./:_-]/g) || []).length,
-      suspicious_keywords: isPhishing ? ["login", "verify", "secure"].filter(k => url.includes(k)) : [],
-      subdomain_count: (url.replace(/https?:\/\//, "").split(".").length - 2),
-      entropy: isPhishing ? 4.2 + Math.random() * 0.8 : 2.8 + Math.random() * 0.6,
-      tld_risk: isPhishing ? 0.7 : 0.1,
-      digit_ratio: isPhishing ? 0.35 : 0.05,
+      url_length: features.url_length,
+      dot_count: features.dot_count,
+      hyphen_count: features.hyphen_count,
+      has_at: features.has_at,
+      has_ip: features.has_ip,
+      https: features.https,
+      digit_count: features.digit_count,
+      special_char_count: features.special_char_count,
+      suspicious_keywords: features.suspicious_keywords,
+      subdomain_count: features.subdomain_count,
+      entropy: features.entropy,
+      tld_risk: features.tld_risk,
+      digit_ratio: features.digit_ratio,
+      path_depth: features.path_depth,
+      query_param_count: features.query_param_count,
+      is_encoded: features.is_encoded,
     },
-    shap_explanation: (isPhishing || isDefacement)
-      ? flags.slice(0, 5).map((f, i) => ({ feature: f, value: +(risk_score / (i + 2)).toFixed(1), impact: "positive" as "positive" | "negative" }))
-      : [
-          { feature: "HTTPS Present", value: 1, impact: "negative" as "positive" | "negative" },
-          { feature: "Domain Age (days)", value: 1820, impact: "negative" as "positive" | "negative" },
-          { feature: "URL Entropy", value: 2.9, impact: "negative" as "positive" | "negative" },
-          { feature: "TLD Risk Score", value: 0.1, impact: "negative" as "positive" | "negative" },
-          { feature: "Suspicious Keywords", value: 0, impact: "negative" as "positive" | "negative" },
-        ],
-    domain_intel: {
-      creation_date: isPhishing ? "2024-11-15" : "2010-03-22",
-      expiry_date: isPhishing ? "2025-11-15" : "2028-03-22",
-      registrar: isPhishing ? "NameCheap, Inc." : "Google LLC",
-      domain_age_days: isPhishing ? 12 : 5420,
-      ip_address: isPhishing ? "185.220.101.47" : "142.250.185.46",
-      ssl_valid: !isPhishing,
-      ssl_expiry: isPhishing ? "N/A" : "2025-12-31",
-      country: isPhishing ? "Russia" : "United States",
-      country_risk: isPhishing ? 85 : 10,
-    },
-    brand_spoof: hasBrandSpoof
-      ? {
-          detected: true,
-          target_brand: url.includes("paypal") ? "PayPal" : url.includes("amazon") ? "Amazon" : "Google",
-          similarity: 0.87 + Math.random() * 0.1,
-        }
-      : null,
+    shap_explanation: shapValues,
+    domain_intel: domainIntel,
+    brand_spoof: brandSpoof,
+    scoring_details: details,
+    predicted_domains: predictedDomains,
     scanned_at: new Date().toISOString(),
   };
 }
 
+// ─── Mock Statistics ──────────────────────────────────────────────────────────
 function mockStatistics(): Statistics {
   return {
     total_scanned: 15847,
@@ -243,14 +177,19 @@ function mockStatistics(): Statistics {
       { keyword: "secure", count: 987 },
       { keyword: "bank", count: 743 },
       { keyword: "update", count: 621 },
+      { keyword: "account", count: 534 },
+      { keyword: "password", count: 412 },
+      { keyword: "confirm", count: 389 },
     ],
     country_distribution: [
-      { country: "Russia", count: 1823, risk: 90 },
-      { country: "China", count: 1456, risk: 82 },
-      { country: "Nigeria", count: 987, risk: 78 },
-      { country: "Brazil", count: 654, risk: 65 },
-      { country: "Ukraine", count: 543, risk: 72 },
-      { country: "United States", count: 321, risk: 25 },
+      { country: "Russia", count: 1823, risk: 90, flag: "🇷🇺" },
+      { country: "China", count: 1456, risk: 82, flag: "🇨🇳" },
+      { country: "Nigeria", count: 987, risk: 80, flag: "🇳🇬" },
+      { country: "Ukraine", count: 654, risk: 74, flag: "🇺🇦" },
+      { country: "Romania", count: 543, risk: 70, flag: "🇷🇴" },
+      { country: "Brazil", count: 489, risk: 65, flag: "🇧🇷" },
+      { country: "United States", count: 321, risk: 18, flag: "🇺🇸" },
+      { country: "Iran", count: 298, risk: 85, flag: "🇮🇷" },
     ],
     daily_detections: Array.from({ length: 14 }, (_, i) => {
       const d = new Date();
@@ -263,30 +202,37 @@ function mockStatistics(): Statistics {
       };
     }),
     risk_distribution: [
-      { category: "Safe (0-30)", count: 9842 },
-      { category: "Suspicious (31-60)", count: 1774 },
+      { category: "Safe (0-25)", count: 9842 },
+      { category: "Suspicious (26-60)", count: 1774 },
       { category: "High Risk (61-100)", count: 4231 },
     ],
+    keyword_trend: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"].map(month => ({
+      month,
+      login: Math.floor(Math.random() * 400 + 250),
+      verify: Math.floor(Math.random() * 300 + 150),
+      secure: Math.floor(Math.random() * 200 + 100),
+      bank: Math.floor(Math.random() * 180 + 80),
+    })),
   };
 }
 
 function mockRecentScans(): RecentScan[] {
   const samples = [
     { url: "https://paypa1-verify-account.xyz/login", prediction: "phishing", risk_score: 89 },
-    { url: "https://google.com/search?q=react", prediction: "benign", risk_score: 5 },
+    { url: "https://google.com/search?q=react", prediction: "benign", risk_score: 0 },
     { url: "http://amaz0n-secure.tk/update-billing", prediction: "phishing", risk_score: 94 },
-    { url: "https://github.com/facebook/react", prediction: "benign", risk_score: 8 },
+    { url: "https://github.com/facebook/react", prediction: "benign", risk_score: 0 },
     { url: "http://sbi-netbanking.ml/verify", prediction: "phishing", risk_score: 91 },
-    { url: "https://stackoverflow.com/questions", prediction: "benign", risk_score: 3 },
+    { url: "https://stackoverflow.com/questions", prediction: "benign", risk_score: 0 },
     { url: "http://185.220.101.47/defaced/index.html", prediction: "defacement", risk_score: 76 },
-    { url: "https://npmjs.com/package/react", prediction: "benign", risk_score: 7 },
+    { url: "https://npmjs.com/package/react", prediction: "benign", risk_score: 0 },
     { url: "http://secure-login-chase-bank.cf/auth", prediction: "phishing", risk_score: 97 },
-    { url: "https://twitter.com/elonmusk", prediction: "benign", risk_score: 6 },
+    { url: "https://twitter.com/elonmusk", prediction: "benign", risk_score: 0 },
   ];
   return samples.map((s, i) => ({
     id: `scan_${i + 1}`,
     ...s,
-    risk_category: s.risk_score > 60 ? "High Risk" : s.risk_score > 30 ? "Suspicious" : "Safe",
+    risk_category: s.risk_score > 60 ? "High Risk" : s.risk_score > 25 ? "Suspicious" : "Safe",
     scanned_at: new Date(Date.now() - i * 3600000).toISOString(),
   }));
 }
@@ -296,62 +242,92 @@ function mockCampaignAlerts(): CampaignAlert[] {
     {
       id: "ca_001",
       campaign_id: "CAMP-2024-001",
-      urls: ["http://paypa1-verify.xyz", "http://paypal-secure.ml", "http://paypa1.cf/login"],
+      urls: [
+        "http://paypa1-verify.xyz",
+        "http://paypal-secure.ml",
+        "http://paypa1.cf/login",
+        "http://paypal-account-verify.tk",
+        "http://secure-paypal-login.pw",
+      ],
       common_ip: "185.220.101.47",
       common_registrar: "Namecheap",
       similarity_score: 0.91,
       detected_at: new Date(Date.now() - 86400000).toISOString(),
       target_brand: "PayPal",
+      timeline: [
+        { date: "Mar 8", domain: "paypa1-verify.xyz", event: "Initial domain registered" },
+        { date: "Mar 9", domain: "paypal-secure.ml", event: "Variant launched with HTTPS" },
+        { date: "Mar 10", domain: "paypa1.cf/login", event: "Login page deployed" },
+        { date: "Mar 11", domain: "paypal-account-verify.tk", event: "New IP cluster added" },
+        { date: "Mar 12", domain: "secure-paypal-login.pw", event: "Mass phishing emails sent" },
+      ],
+      predicted_next: ["verify-paypal-secure.tk", "paypal-auth-update.ml", "paypa1-confirm.xyz"],
     },
     {
       id: "ca_002",
       campaign_id: "CAMP-2024-002",
-      urls: ["http://amaz0n-deals.tk", "http://amazon-secure.ml", "http://amaz0n.cf/update"],
-      common_ip: "192.168.45.23",
+      urls: [
+        "http://amaz0n-deals.tk",
+        "http://amazon-secure.ml",
+        "http://amaz0n.cf/update",
+        "http://amazon-account-verify.pw",
+      ],
+      common_ip: "192.64.119.23",
       common_registrar: "GoDaddy",
       similarity_score: 0.88,
       detected_at: new Date(Date.now() - 172800000).toISOString(),
       target_brand: "Amazon",
+      timeline: [
+        { date: "Mar 6", domain: "amaz0n-deals.tk", event: "Campaign launched during sale season" },
+        { date: "Mar 7", domain: "amazon-secure.ml", event: "SSL spoofing attempt detected" },
+        { date: "Mar 8", domain: "amaz0n.cf/update", event: "Credential harvesting page live" },
+        { date: "Mar 9", domain: "amazon-account-verify.pw", event: "2FA bypass page added" },
+      ],
+      predicted_next: ["secure-amazon-update.xyz", "amaz0n-account.cf", "amazon-verify-billing.ml"],
     },
     {
       id: "ca_003",
       campaign_id: "CAMP-2024-003",
-      urls: ["http://sbi-netbanking.cf", "http://sbi-secure-login.ml", "http://sbibanking.tk"],
+      urls: [
+        "http://sbi-netbanking.cf",
+        "http://sbi-secure-login.ml",
+        "http://sbibanking.tk",
+      ],
       common_ip: "45.142.212.100",
       common_registrar: "NameSilo",
       similarity_score: 0.85,
       detected_at: new Date(Date.now() - 259200000).toISOString(),
       target_brand: "SBI Bank",
+      timeline: [
+        { date: "Mar 4", domain: "sbi-netbanking.cf", event: "Domain registered, idle" },
+        { date: "Mar 5", domain: "sbi-secure-login.ml", event: "Phishing kit deployed" },
+        { date: "Mar 7", domain: "sbibanking.tk", event: "Targeted SMS phishing (smishing) started" },
+      ],
+      predicted_next: ["onlinesbi-secure.xyz", "sbi-login-verify.tk", "sbi-account-update.ml"],
     },
   ];
 }
 
-// API functions — swap mock with real fetch when backend is ready
+// ─── Exported API Functions ───────────────────────────────────────────────────
 export async function scanUrl(url: string): Promise<ScanResult> {
-  // Real API call:
-  // const res = await fetch(`${BASE_URL}/scan-url`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({url}) });
+  // Real: const res = await fetch(`${BASE_URL}/scan-url`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) });
   // return res.json();
-  await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000));
-  return mockScanResult(url);
+  void BASE_URL;
+  await new Promise(r => setTimeout(r, 1800 + Math.random() * 800));
+  return runScan(url);
 }
 
 export async function getStatistics(): Promise<Statistics> {
-  // const res = await fetch(`${BASE_URL}/statistics`);
-  // return res.json();
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, 400));
   return mockStatistics();
 }
 
 export async function getRecentScans(): Promise<RecentScan[]> {
-  // const res = await fetch(`${BASE_URL}/recent-scans`);
-  // return res.json();
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, 300));
   return mockRecentScans();
 }
 
 export async function getCampaignAlerts(): Promise<CampaignAlert[]> {
-  // const res = await fetch(`${BASE_URL}/campaign-alerts`);
-  // return res.json();
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, 400));
   return mockCampaignAlerts();
 }
