@@ -218,8 +218,8 @@ export function extractFeatures(url: string): FeatureVector {
   const subdomainCount = Math.max(0, hostParts.length - 2);
 
   // Count max consecutive digit sequence
-  const digitMatch = url.match(/\d+/g) || [];
-  const maxConsecutiveDigits = digitMatch.reduce((max, m) => Math.max(max, m.length), 0);
+  const digitMatches = url.match(/\d+/g) || [];
+  const maxConsecutiveDigits = digitMatches.reduce((mx: number, m: string) => Math.max(mx, m.length), 0);
 
   return {
     url_length: url.length,
