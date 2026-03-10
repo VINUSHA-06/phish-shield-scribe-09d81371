@@ -81,7 +81,7 @@ function levenshtein(a: string, b: string): number {
   return dp[m][n];
 }
 
-function detectBrandSpoof(url: string): { detected: boolean; target_brand: string; similarity: number } | null {
+export function detectBrandSpoof(url: string): { detected: boolean; target_brand: string; similarity: number } | null {
   const lower = url.toLowerCase().replace(/https?:\/\//i, "").split("/")[0];
   for (const brand of BRAND_TARGETS) {
     for (const kw of brand.keywords) {
