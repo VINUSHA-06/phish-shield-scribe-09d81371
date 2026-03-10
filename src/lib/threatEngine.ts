@@ -218,10 +218,15 @@ export function extractFeatures(url: string): FeatureVector {
   const subdomainCount = Math.max(0, hostParts.length - 2);
 
   // Count max consecutive digit sequence
-  const digitMatches = url.match(/\d+/g) || [];
-  const maxConsecutiveDigits = digitMatches.reduce((mx: number, m: string) => Math.max(mx, m.length), 0);
+  const rawDigitMatches = url.match(/\d+/g);
+  let maxConsecutiveDigits = 0;
+  if (rawDigitMatches) {
+    for (const seg of rawDigitMatches) {
+      if (seg.length > maxConsecutiveDigits) maxConsecutiveDigits = seg.length;
+    }
+  }
 
-  return {
+  const featureVec: FeatureVector = {
     url_length: url.length,
     dot_count: (url.match(/\./g) || []).length,
     hyphen_count: (url.match(/-/g) || []).length,
@@ -241,6 +246,7 @@ export function extractFeatures(url: string): FeatureVector {
     consecutive_digits: maxConsecutiveDigits,
     brand_keyword_found: BRAND_TARGETS.some(b => b.keywords.some(k => lower.includes(k))),
   };
+  return featureVec;
 }
 
 // ─── Phase 3: Multi-Layer Risk Scoring Engine ─────────────────────────────────
